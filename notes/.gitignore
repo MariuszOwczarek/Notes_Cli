@@ -1,0 +1,36 @@
+# venv
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+pip-wheel-metadata/
+
+# Build artifacts
+build/
+dist/
+*.egg
+*.whl
+
+# Test/cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Local data (Level 2+)
+data/
+
+# dane lokalne
+data/*.jsonl
+!data/.gitkeep
