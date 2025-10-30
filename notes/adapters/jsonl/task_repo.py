@@ -4,19 +4,41 @@ from notes.domain.errors import TaskAlreadyExistsError, TaskNotFoundError, TaskV
 from pathlib import Path
 from typing import Iterable
 from dataclasses import asdict
-from datetime import datetime, timezone
 import os, json
-
+from notes.domain.enums import TaskStatus
 from datetime import datetime, timezone
 
 ALLOWED = {"Open", "In Progress", "Closed"}
+
+def _encode_task(task: Task) -> dict:
+    return {
+        "task_id": str(task.task_id),
+        "title": task.title,
+        "description": task.description,
+        "created_at": task.created_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "status": task.status.value if isinstance(task.status, TaskStatus) else str(task.status),  # enum -> str
+    }
+
+def _decode_task(row: dict) -> Task:
+    raw = row.get("status", "Open")
+    try:
+        status = raw if isinstance(raw, TaskStatus) else TaskStatus(raw)  # str -> enum
+    except ValueError:
+        status = TaskStatus.OPEN  # defensywny fallback
+
+    return Task(
+        task_id=TaskId(row["task_id"]),
+        title=row["title"],
+        description=row.get("description"),
+        created_at=_parse_utc_z(row["created_at"]),  # jak masz z L2
+        status=status,
+    )
 
 def _parse_utc_z(s: str) -> datetime:
     """Parsuje datę w formacie ISO8601 zakończoną literą 'Z' (UTC)."""
     if not isinstance(s, str) or not s.endswith("Z"):
         raise ValueError("created_at must be ISO8601 UTC with 'Z'")
     return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
-    
 
 class JsonlTaskRepository(TaskRepository):
     def __init__(self, path: Path) -> None:
@@ -27,81 +49,47 @@ class JsonlTaskRepository(TaskRepository):
 
 
     def _load_tasks(self) -> dict[str, Task]:
-        """Wczytuje wszystkie Taski z pliku JSONL.
-        Zwraca słownik {task_id: Task}.
-        Ignoruje puste linie.
-        Rzuca TaskValidationError przy błędnym rekordzie
-        i DomainError przy problemach I/O (poza FileNotFoundError)."""
-
         tasks: dict[str, Task] = {}
-
         try:
             with self.path.open("r", encoding="utf-8") as f:
                 for lineno, line in enumerate(f, start=1):
                     line = line.strip()
                     if not line:
-                        continue  # pomiń puste linie
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError as e:
+                        raise TaskValidationError(f"{self.path.name}:{lineno}: invalid JSON: {e}")
 
                     try:
-                        record = json.loads(line)  # zamienia tekst JSON → dict
-                    except json.JSONDecodeError as e:
-                        raise TaskValidationError(
-                            f"{self.path.name}:{lineno}: invalid JSON: {e}"
-                        )
-                    try:
-                        task_id = record["task_id"]
-                        title = record["title"]
-                        description = record.get("description")
-                        created_at = _parse_utc_z(record["created_at"])
-                        status = record["status"]
-                        if status not in ALLOWED:
-                            raise ValueError(f"status '{status}' is not allowed")
-                    except KeyError as e:
-                        raise TaskValidationError("record", f"{self.path.name}:{lineno}: missing field {e!s}")
-                    except ValueError as e:
+                        task = _decode_task(record)
+                    except (KeyError, ValueError) as e:
                         raise TaskValidationError("record", f"{self.path.name}:{lineno}: {e}")
 
-                    if task_id in tasks:
-                        raise TaskValidationError("record", f"{self.path.name}:{lineno}: duplicate task_id '{task_id}'")
-
-                    task = Task(
-                        task_id=task_id,
-                        title=title,
-                        description=description,
-                        created_at=created_at,
-                        status=status,
-                    )
-                    tasks[task_id] = task
-
+                    key = str(task.task_id)  # klucz zawsze jako string
+                    if key in tasks:
+                        raise TaskValidationError("record", f"{self.path.name}:{lineno}: duplicate task_id '{key}'")
+                    tasks[key] = task
         except FileNotFoundError:
-            # brak pliku = pusta baza
             return {}
-
         except OSError as e:
-            # inne błędy systemowe
             raise DomainError(str(e))
-
         return tasks
 
 
-    def _atomic_dump(self, tasks: Iterable[Task]) -> None:
-        """Zapisuje cały zbiór Tasków do pliku JSONL w sposób atomowy.
 
-        Strategia: zapisz do pliku tymczasowego obok (*.swap), fsync, a potem os.replace()
-        na docelowy plik. Dzięki temu po awarii mamy *albo* starą, *albo* nową wersję.
-        """
+    def _atomic_dump(self, tasks: Iterable[Task]) -> None:
         tmp = self.path.with_suffix(self.path.suffix + ".swap")
         try:
             with tmp.open("w", encoding="utf-8", newline="\n") as f:
                 for t in tasks:
-                    rec = self._task_to_record(t)
+                    rec = _encode_task(t)  # enum -> str, TaskId -> str, datetime -> Z
                     f.write(json.dumps(rec, ensure_ascii=False))
                     f.write("\n")
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp, self.path)  # atomowa podmiana
+            os.replace(tmp, self.path)
         except OSError as e:
-            # sprzątanie po nieudanym zapisie (nie maskuje błędu)
             try:
                 if tmp.exists():
                     tmp.unlink()
@@ -109,27 +97,16 @@ class JsonlTaskRepository(TaskRepository):
                 pass
             raise DomainError(str(e))
 
-    @staticmethod
-    def _format_dt(dt: datetime) -> str:
-        # ISO 8601 w UTC z sufiksem 'Z'
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    def _task_to_record(self, t: Task) -> dict:
-        d = asdict(t)              # bo Task to dataclass (frozen) z Level 1
-        d["created_at"] = self._format_dt(t.created_at)
-        return d
-
     def add(self, task: Task) -> None:
         """Dodaje nowy Task do repozytorium.
         Rzuca TaskAlreadyExistsError, jeśli task_id już istnieje.
         Zapisuje dane w sposób atomowy."""
 
         tasks = self._load_tasks()
-        if task.task_id in tasks:
+        key = str(task.task_id)
+        if key in tasks:
             raise TaskAlreadyExistsError(task.task_id)
-        tasks[task.task_id] = task
+        tasks[key] = task
         self._atomic_dump(tasks.values())
 
 
@@ -137,19 +114,22 @@ class JsonlTaskRepository(TaskRepository):
         """Zwraca Task o podanym ID.
         Rzuca TaskNotFoundError, jeśli nie istnieje."""
 
-        task = self._load_tasks().get(task_id)
+        task = self._load_tasks().get(str(task_id))
         if task is None:
             raise TaskNotFoundError(task_id)
         return task
+
 
     def update(self, task: Task) -> None:
         """Aktualizuje istniejący Task w repozytorium."""
 
         tasks = self._load_tasks()
-        if task.task_id not in tasks:
+        key = str(task.task_id)
+        if key not in tasks:
             raise TaskNotFoundError(task.task_id)
-        tasks[task.task_id] = task
+        tasks[key] = task
         self._atomic_dump(tasks.values())
+
 
     def remove(self, task_id: TaskId) -> None:
         """Usuwa Task o podanym ID.
@@ -157,9 +137,10 @@ class JsonlTaskRepository(TaskRepository):
         Zapis wykonywany atomowo."""
 
         tasks = self._load_tasks()
-        if task_id not in tasks:
+        key = str(task_id)
+        if key not in tasks:
             raise TaskNotFoundError(task_id)
-        del tasks[task_id]
+        del tasks[key]
         self._atomic_dump(tasks.values())
 
     def list_all(self, offset: int = 0, limit: int | None = None) -> Iterable[Task]:
@@ -188,5 +169,4 @@ class JsonlTaskRepository(TaskRepository):
 
     def exists(self, task_id: TaskId) -> bool:
         """Zwraca True, jeśli istnieje zadanie o podanym ID."""
-        tasks = self._load_tasks()
-        return task_id in tasks
+        return str(task_id) in self._load_tasks()

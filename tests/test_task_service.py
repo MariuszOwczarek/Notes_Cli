@@ -5,13 +5,31 @@ from notes.domain.errors import TaskNotFoundError
 import pytest
 from datetime import datetime, timezone, timedelta
 
+from datetime import datetime, timezone
+
+class FakeIdProvider:
+    def __init__(self):
+        self.counter = 0
+    def new_id(self) -> str:
+        self.counter += 1
+        return f"id-{self.counter}"
+
+class FakeClock:
+    def __init__(self, fixed: datetime | None = None):
+        # jeśli nie podamy fixed, zwróci zawsze ten sam „teraz”
+        self.fixed = fixed or datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    def now(self) -> datetime:
+        return self.fixed
+    
+
+
 def format_task(task) -> str:
     return f"✅ {task.title} | {task.task_id} | done={task.status} | created={task.created_at}"
 
 def test_create_task():
     # Arrange
     repo = InMemoryTaskRepository()
-    service = TaskService(repo)
+    service = TaskService(repo, FakeIdProvider(), FakeClock())
 
     # Act
     task = service.create_task("Kup mleko")
@@ -27,7 +45,7 @@ def test_create_task():
 def test_list_empty_returns_no_items():
     # Arrange
     repo = InMemoryTaskRepository()
-    service = TaskService(repo)
+    service = TaskService(repo, FakeIdProvider(), FakeClock())
     
     # Act
     task = service.create_task("Kup mleko")
@@ -42,7 +60,7 @@ def test_list_empty_returns_no_items():
 def test_list_sorted_by_created_at_with_tiebreaker():
     # Arrange
     repo = InMemoryTaskRepository()
-    service = TaskService(repo)
+    service = TaskService(repo, FakeIdProvider(), FakeClock())
     
     # Act
     t1 = service.create_task("A")
@@ -61,7 +79,7 @@ def test_list_sorted_by_created_at_with_tiebreaker():
 def test_get_returns_existing_task():
     #Arrange
     repo = InMemoryTaskRepository()
-    service = TaskService(repo)
+    service = TaskService(repo, FakeIdProvider(), FakeClock())
 
     # Act
     t1 = service.create_task("A")
@@ -76,7 +94,7 @@ def test_get_returns_existing_task():
 def test_get_raises_on_missing():
     #Arrange
     repo = InMemoryTaskRepository()
-    service = TaskService(repo)
+    service = TaskService(repo, FakeIdProvider(), FakeClock())
 
     # Assert
     with pytest.raises(TaskNotFoundError):
@@ -85,7 +103,7 @@ def test_get_raises_on_missing():
 def test_done_marks_as_completed():
     #Arrange
     repo = InMemoryTaskRepository()
-    service = TaskService(repo)
+    service = TaskService(repo, FakeIdProvider(), FakeClock())
 
     #Act
     t1 = service.create_task("A")
@@ -99,7 +117,7 @@ def test_done_marks_as_completed():
 
 def test_done_is_idempotent():
     repo = InMemoryTaskRepository()
-    service = TaskService(repo)
+    service = TaskService(repo, FakeIdProvider(), FakeClock())
     t = service.create_task("A")
 
     t1 = service.mark_done(t.task_id)
@@ -109,41 +127,44 @@ def test_done_is_idempotent():
     assert t2.status == "Closed"
     assert t1 == t2 
 
+
+from notes.adapters.system.id_provider_uuid import UuidIdProvider
+from datetime import datetime, timezone
+
 def test_create_sets_valid_uuid_v4_and_is_unique():
     repo = InMemoryTaskRepository()
-    service = TaskService(repo)
+    # do testu UUID korzystamy z prawdziwego providera:
+    service = TaskService(repo, UuidIdProvider(), FakeClock(datetime.now(timezone.utc)))
 
     t1 = service.create_task("A")
     t2 = service.create_task("B")
 
-    # format + wersja v4
     import uuid
     u1 = uuid.UUID(str(t1.task_id))
     u2 = uuid.UUID(str(t2.task_id))
     assert u1.version == 4
     assert u2.version == 4
-
-    # unikalność
     assert t1.task_id != t2.task_id
+
+
+from datetime import datetime, timezone, timedelta
 
 def test_created_at_is_utc_aware_and_not_in_future():
     repo = InMemoryTaskRepository()
-    service = TaskService(repo)
+    fixed = datetime.now(timezone.utc)  # to „teraz” dla zegara
+    service = TaskService(repo, FakeIdProvider(), FakeClock(fixed))
 
-    before = datetime.now(timezone.utc)
+    before = fixed  # albo datetime.now(timezone.utc) tuż przed create
     t = service.create_task("A")
-    after = datetime.now(timezone.utc)
+    after = fixed   # albo datetime.now(timezone.utc) tuż po create
 
-    # aware + UTC
     assert t.created_at.tzinfo is not None
     assert t.created_at.tzinfo.utcoffset(t.created_at) == timedelta(0)
-
-    # w „rozsądnym” przedziale czasu
     assert before <= t.created_at <= after
 
 def test_created_at_is_preserved_when_status_changes():
     repo = InMemoryTaskRepository()
-    service = TaskService(repo)
+    service = TaskService(repo, FakeIdProvider(), FakeClock())
 
     t = service.create_task("A")
     created = t.created_at
@@ -156,7 +177,7 @@ def test_created_at_is_preserved_when_status_changes():
 
 def test_list_sorted_by_created_at_then_task_id():
     repo = InMemoryTaskRepository()
-    service = TaskService(repo)
+    service = TaskService(repo, FakeIdProvider(), FakeClock())
 
     a = service.create_task("A")
     b = service.create_task("B")
@@ -165,3 +186,14 @@ def test_list_sorted_by_created_at_then_task_id():
     items, _ = service.list_tasks(order_by="created_at")
     # oczekiwana kolejność: created_at ASC, a przy remisie task_id ASC
     assert items == sorted(items, key=lambda t: (t.created_at, str(t.task_id)))
+
+
+def test_create_uses_clock_time():
+    repo = InMemoryTaskRepository()
+    clock = FakeClock(datetime(2025, 1, 2, 3, 4, 5, tzinfo=timezone.utc))
+    idp = FakeIdProvider()
+    svc = TaskService(repo, idp, clock)
+
+    t = svc.create_task("A")
+    assert t.created_at == clock.fixed
+

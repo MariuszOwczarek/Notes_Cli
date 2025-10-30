@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional
 from notes.domain.enums import TaskStatus
 from notes.api.colors import TaskColor
+from notes.adapters.system.id_provider_uuid import UuidIdProvider
+from notes.adapters.system.clock_system import SystemClock
 
 
 ### COMMENTS
@@ -44,7 +46,15 @@ def build_service(file: Optional[Path]) -> TaskService:
         repo = JsonlTaskRepository(file)
     else:
         repo = InMemoryTaskRepository()
-    return TaskService(repo)
+    id_provider = UuidIdProvider()
+    clock = SystemClock()
+    return TaskService(repo=repo, id_provider=id_provider, clock=clock)
+
+def get_service() -> TaskService:
+    if service is None:
+        console.print("[red]Błąd: serwis nie został zainicjalizowany[/]")
+        raise SystemExit(1)
+    return service
 
 @app.callback()
 def main(
@@ -61,31 +71,30 @@ def main(
 
 
 
-def short_id(task_id: str, n: int = 8) -> str:
+def short_id(task_id: TaskId | str, n: int = 8) -> str:
     """Zwraca skróconą wersję UUID do wyświetlenia (np. pierwsze 8 znaków)."""
     return task_id[:n]
     
 
 def color_status(status: TaskStatus) -> str:
-    """Zwraca status w Rich-markup z kolorem."""
+    """ """
     match status:
         case TaskStatus.OPEN:
-            return f"{TaskColor.RED}Open{TaskColor.RESET}"
+            return f"{TaskColor.RED}{status.value}{TaskColor.RESET}"
         case TaskStatus.IN_PROGRESS:
-            return f"{TaskColor.BLUE}In Progress{TaskColor.RESET}"
+            return f"{TaskColor.BLUE}{status.value}{TaskColor.RESET}"
         case TaskStatus.CLOSED:
-            return f"{TaskColor.GREEN}Closed{TaskColor.RESET}"
+            return f"{TaskColor.GREEN}{status.value}{TaskColor.RESET}"
         case _:
             return str(status)
-
 
 def render_list(items: list[Task], total: int, page: int, page_size: int) -> None:
     """Renderuje tabelę Rich z kolumnami: ID, Title, Created, Status + stopką paginacji."""
 
     table = Table(show_lines=True, header_style="bold")
-    table.add_column("ID", no_wrap=True, style="Cyan")
+    table.add_column("ID", no_wrap=True, style="cyan")
     table.add_column("Title")
-    table.add_column("Created At", no_wrap=True, style="Dim")
+    table.add_column("Created At", no_wrap=True, style="dim")
     table.add_column("Status", no_wrap=True)
 
     for t in items:
@@ -97,7 +106,8 @@ def render_list(items: list[Task], total: int, page: int, page_size: int) -> Non
             color_status(t.status),
         )
     
-    pages = max(1, ceil(total/ page_size)) if page_size > 0 else 1
+    ##pages = max(1, ceil(total/ page_size)) if page_size > 0 else 1
+    pages = max(1, ceil(total / max(1, page_size)))
 
     console.print(table)
     console.print(
@@ -115,7 +125,8 @@ def add(title: str, desc: str | None = Option(None, "--desc", "-d")) -> None:
     - Błąd walidacji: TaskValidationError → czerwony Panel z podpowiedzią.
     """
     try:
-        task = service.create_task(title=title, description=desc)
+        svc = get_service()
+        task = svc.create_task(title=title, description=desc)
         console.print(Panel.fit(
             f"✅ Dodano zadanie\n"
             f"[cyan]ID:[/cyan] {short_id(task.task_id)}\n"
@@ -157,7 +168,8 @@ def list_cmd(
     - Błąd paginacji: TaskValidationError → czerwony Panel.
     """
     try:
-        items, total = service.list_tasks(page=page, page_size=page_size, order_by=order_by)
+        svc = get_service()
+        items, total = svc.list_tasks(page=page, page_size=page_size, order_by=order_by)
         render_list(items, total, page, page_size)
         console.print(f"[dim]Strona {page}, razem {total} zadań[/]")
     except TaskValidationError as e:
@@ -176,7 +188,7 @@ def list_cmd(
 @app.command("inprogress")
 def in_progress(task_id: str) -> None:
     """
-    Oznacza zadanie jako zakończone (status="In Progress").
+    Oznacza zadanie jako w toku (status="In Progress").
 
     Flow:
     - service.mark_in+progress(TaskId(task_id))
@@ -184,7 +196,8 @@ def in_progress(task_id: str) -> None:
     - Błąd: TaskNotFoundError → „❌ Nie znaleziono… Użyj 'notes list'”.
     """
     try:
-        task = service.mark_in_progress(TaskId(task_id))
+        svc = get_service()
+        task = svc.mark_in_progress(TaskId(task_id))
         console.print(Panel.fit(
             f"✅ Sukces! ID: {short_id(task.task_id)}\n[dim]Title:[/dim] {task.title}\nStatus: {color_status(task.status)}",
             title="Sukces",
@@ -214,7 +227,8 @@ def done(task_id: str) -> None:
     - Błąd: TaskNotFoundError → „❌ Nie znaleziono… Użyj 'notes list'”.
     """
     try:
-        task = service.mark_done(TaskId(task_id))
+        svc = get_service()
+        task = svc.mark_done(TaskId(task_id))
         console.print(Panel.fit(
             f"✅ Sukces! ID: {short_id(task.task_id)}\n[dim]Title:[/dim] {task.title}\nStatus: {color_status(task.status)}",
             title="Sukces",
@@ -222,7 +236,7 @@ def done(task_id: str) -> None:
         ))
     except TaskNotFoundError as e:
         console.print(Panel.fit(
-            f"❌ {e}\n[dim]Nie znaleziono zadania o ID: {task_id}[/]\n, [dim]Użyj 'notes list', żeby znaleźć poprawne ID[/]",
+            f"❌ {e}\n[dim]Nie znaleziono zadania o ID: {task_id}[/]\n [dim]Użyj 'notes list', żeby znaleźć poprawne ID[/]",
             title="Nie znaleziono",
             border_style="red",
         ))
@@ -244,7 +258,8 @@ def rm(task_id: str) -> None:
     - Błąd: TaskNotFoundError → czerwony Panel z podpowiedzią.
     """
     try:
-        service.remove_task(TaskId(task_id))
+        svc = get_service()
+        svc.remove_task(TaskId(task_id))
         console.print(Panel.fit(
             f"🟡 Zadanie usunięte\nID: {short_id(task_id)}\n[dim] skasowany[/]",
             title="Usunięto",
@@ -277,7 +292,8 @@ def show(task_id: str) -> None:
     - Błąd: TaskNotFoundError → czerwony Panel.
     """
     try:
-        task = service.get_task(TaskId(task_id))
+        svc = get_service()
+        task = svc.get_task(TaskId(task_id))
 
         id_line = f"ID: {short_id(task.task_id)}"
         title_line = f"Title: {task.title}"
@@ -321,12 +337,13 @@ def demo() -> None:
     console.print(Panel.fit("🚀 Start demonstracji", border_style="cyan"))
 
     # 1️⃣ Tworzymy 3 zadania
-    t1 = service.create_task("Buy milk", description="2% lactose-free")
-    t2 = service.create_task("Call mom", description="Sunday afternoon")
-    t3 = service.create_task("Read a book", description="DDD chapter 3")
-    t4 = service.create_task("Watch Movie", description="Furioza 2")
+    svc = get_service()
+    t1 = svc.create_task("Buy milk", description="2% lactose-free")
+    t2 = svc.create_task("Call mom", description="Sunday afternoon")
+    t3 = svc.create_task("Read a book", description="DDD chapter 3")
+    t4 = svc.create_task("Watch Movie", description="Furioza 2")
     
-    items, total = service.list_tasks()
+    items, total = svc.list_tasks()
     console.print(Panel.fit(f"✅ Utworzono {total} zadania", border_style="green"))
 
     # 2️⃣ Pokazujemy listę po dodaniu
@@ -335,19 +352,19 @@ def demo() -> None:
     render_list(items, total, page=1, page_size=20)
 
     # 3️⃣ Oznaczamy jedno jako zakończone
-    service.mark_done(t2.task_id)
+    svc.mark_done(t2.task_id)
     console.print(Panel.fit(f"✔️ Zamknięto zadanie: {short_id(t2.task_id)} ({t2.title})", border_style="yellow"))
 
     # 3️⃣ Oznaczamy jedno jako in progress
-    service.mark_in_progress(t4.task_id)
+    svc.mark_in_progress(t4.task_id)
     console.print(Panel.fit(f"✔️ Zmieniono status: {short_id(t4.task_id)} ({t4.title})", border_style="blue"))
 
     # 4️⃣ Usuwamy jedno zadanie
-    service.remove_task(t3.task_id)
+    svc.remove_task(t3.task_id)
     console.print(Panel.fit(f"🗑️ Usunięto zadanie: {short_id(t3.task_id)} ({t3.title})", border_style="red"))
 
     # 5️⃣ Pokazujemy listę po zmianach
-    items, total = service.list_tasks()
+    items, total = svc.list_tasks()
     console.print("\n📋 Lista po zmianach:")
     render_list(items, total, page=1, page_size=20)
 

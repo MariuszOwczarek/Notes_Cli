@@ -1,11 +1,10 @@
 from notes.ports.task_repository import TaskRepository
 from notes.domain.task import Task, TaskId
 from notes.domain.errors import TaskValidationError, TaskNotFoundError
-from uuid import uuid4
-from datetime import datetime, timezone
 from typing import Literal
 from notes.domain.enums import TaskStatus
-
+from notes.ports.id_provider import IdProvider
+from notes.ports.clock import Clock
 
 ### COMMENTS
 # ==========================================================
@@ -32,8 +31,10 @@ class TaskService:
 
     :param repo: Implementacja portu TaskRepository.
     """
-    def __init__(self, repo: TaskRepository) -> None:
+    def __init__(self, repo: TaskRepository, id_provider: IdProvider, clock: Clock) -> None:
         self.repo = repo
+        self.id_provider = id_provider
+        self.clock = clock
     
     def create_task(self, title, description=None, due_date=None) -> Task:
         """
@@ -41,7 +42,7 @@ class TaskService:
 
             - Walidacja: `title` nie może być pusty ani składać się wyłącznie z białych znaków
             (`TaskValidationError("title", "...")`).
-            - `task_id` generowany lokalnie (`str(uuid4())`), `created_at = datetime.utcnow()`.
+            `task_id` pochodzi z IdProvider.new_id(), `created_at` z Clock.now() (UTC-aware).
             - Status startowy: "Open" (domyślna wartość w modelu).
 
             :param title: Tytuł zadania (wymagany).
@@ -54,8 +55,8 @@ class TaskService:
         if not title or not title.strip():
             raise TaskValidationError("title", "Tytul nie moze byc pusty")
         
-        task_id = str(uuid4())
-        created_at = datetime.now(timezone.utc)
+        task_id = self.id_provider.new_id()
+        created_at = self.clock.now()
         task = Task(task_id = TaskId(task_id), title=title, description=description, created_at=created_at)
         self.repo.add(task)
         
@@ -107,7 +108,7 @@ class TaskService:
         task = self.repo.get(task_id)
         if task is None:
             raise TaskNotFoundError(task_id)
-        if task.status == 'In Progress':
+        if task.status == TaskStatus.IN_PROGRESS:
             return task
         closed_task = Task(task_id = task.task_id, title=task.title, description=task.description, created_at=task.created_at, status=TaskStatus.IN_PROGRESS)
         self.repo.update(closed_task)
@@ -129,7 +130,7 @@ class TaskService:
         task = self.repo.get(task_id)
         if task is None:
             raise TaskNotFoundError(task_id)
-        if task.status == "Closed":
+        if task.status == TaskStatus.CLOSED:
             return task
         closed_task = Task(task_id = task.task_id, title=task.title, description=task.description, created_at=task.created_at, status=TaskStatus.CLOSED)
         self.repo.update(closed_task)
