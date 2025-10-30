@@ -11,6 +11,8 @@ from typing import Literal
 from math import ceil
 from pathlib import Path
 from typing import Optional
+from notes.domain.enums import TaskStatus
+from notes.api.colors import TaskColor
 
 
 ### COMMENTS
@@ -64,16 +66,17 @@ def short_id(task_id: str, n: int = 8) -> str:
     return task_id[:n]
     
 
-def color_status(status: str) -> str:
-    """Zwraca status w Rich-markup z kolorem (Open/In Progress/Closed)."""
-    if status == "Open":
-        return "[red]Open[/]"
-    elif status == "In Progress":
-        return "[blue]In Progress[/]"
-    elif status == "Closed":
-        return "[green]Closed[/]"
-    else:
-        return
+def color_status(status: TaskStatus) -> str:
+    """Zwraca status w Rich-markup z kolorem."""
+    match status:
+        case TaskStatus.OPEN:
+            return f"{TaskColor.RED}Open{TaskColor.RESET}"
+        case TaskStatus.IN_PROGRESS:
+            return f"{TaskColor.BLUE}In Progress{TaskColor.RESET}"
+        case TaskStatus.CLOSED:
+            return f"{TaskColor.GREEN}Closed{TaskColor.RESET}"
+        case _:
+            return str(status)
 
 
 def render_list(items: list[Task], total: int, page: int, page_size: int) -> None:

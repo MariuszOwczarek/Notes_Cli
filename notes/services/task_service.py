@@ -2,8 +2,9 @@ from notes.ports.task_repository import TaskRepository
 from notes.domain.task import Task, TaskId
 from notes.domain.errors import TaskValidationError, TaskNotFoundError
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
+from notes.domain.enums import TaskStatus
 
 
 ### COMMENTS
@@ -54,7 +55,7 @@ class TaskService:
             raise TaskValidationError("title", "Tytul nie moze byc pusty")
         
         task_id = str(uuid4())
-        created_at = datetime.utcnow()
+        created_at = datetime.now(timezone.utc)
         task = Task(task_id = TaskId(task_id), title=title, description=description, created_at=created_at)
         self.repo.add(task)
         
@@ -75,7 +76,6 @@ class TaskService:
 
         :param page: Numer strony (>=1).
         :param page_size: Liczba elementów na stronę (>=1).
-        :param order_by: Pole sortowania ("created_at" lub "title").
         :raises TaskValidationError: Gdy paginacja jest niepoprawna.
         :return: (items, total)
         """
@@ -107,7 +107,9 @@ class TaskService:
         task = self.repo.get(task_id)
         if task is None:
             raise TaskNotFoundError(task_id)
-        closed_task = Task(task_id = task.task_id, title=task.title, description=task.description, created_at=task.created_at, status="In Progress")
+        if task.status == 'In Progress':
+            return task
+        closed_task = Task(task_id = task.task_id, title=task.title, description=task.description, created_at=task.created_at, status=TaskStatus.IN_PROGRESS)
         self.repo.update(closed_task)
         return closed_task
 
@@ -127,7 +129,9 @@ class TaskService:
         task = self.repo.get(task_id)
         if task is None:
             raise TaskNotFoundError(task_id)
-        closed_task = Task(task_id = task.task_id, title=task.title, description=task.description, created_at=task.created_at, status="Closed")
+        if task.status == "Closed":
+            return task
+        closed_task = Task(task_id = task.task_id, title=task.title, description=task.description, created_at=task.created_at, status=TaskStatus.CLOSED)
         self.repo.update(closed_task)
         return closed_task
     

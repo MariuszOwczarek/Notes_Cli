@@ -1,6 +1,7 @@
 from typing import NewType, Literal
 import datetime
 from dataclasses import dataclass
+from notes.domain.enums import TaskStatus
 
 TaskId = NewType("TaskId", str)
 
@@ -14,8 +15,7 @@ class Task():
     title: str
     created_at: datetime
     description: str | None = None
-    status: Literal["Open","In Progress","Closed"] = "Open"
-
+    status: TaskStatus = TaskStatus.OPEN
 
 
 ### COMMENTS
