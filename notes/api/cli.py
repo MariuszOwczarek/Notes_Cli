@@ -7,14 +7,14 @@ from typer import Option, Typer
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from typing import Literal
+from typing import Literal, Optional
 from math import ceil
 from pathlib import Path
-from typing import Optional
 from notes.domain.enums import TaskStatus
 from notes.api.colors import TaskColor
 from notes.adapters.system.id_provider_uuid import UuidIdProvider
 from notes.adapters.system.clock_system import SystemClock
+from notes.adapters.sql.task_repo import SqlTaskRepository
 
 
 ### COMMENTS
@@ -37,15 +37,19 @@ console = Console()
 
 service: TaskService | None = None  # ustawimy w callbacku
 
-def build_service(file: Optional[Path]) -> TaskService:
+def build_service(file: Optional[Path] = None, db: Optional[Path] = None) -> TaskService:
+    # Priorytet: SQL > JSONL > InMemory
     """Tworzy serwis na bazie wybranego adaptera.
     - Brak pliku -> InMemory
     - Podany plik -> Jsonl (trwałość)
     """
-    if file:
+    if db:
+        repo = SqlTaskRepository(db)
+    elif file:
         repo = JsonlTaskRepository(file)
     else:
         repo = InMemoryTaskRepository()
+
     id_provider = UuidIdProvider()
     clock = SystemClock()
     return TaskService(repo=repo, id_provider=id_provider, clock=clock)
@@ -58,18 +62,11 @@ def get_service() -> TaskService:
 
 @app.callback()
 def main(
-    file: Optional[Path] = Option(
-        None,
-        "--file",
-        "-f",
-        help="Ścieżka do pliku JSONL (włącza tryb trwały)",
-    )
+    file: Optional[Path] = Option(None, "--file", "-f", help="Ścieżka do pliku JSONL (włącza tryb trwały JSONL)"),
+    db: Optional[Path]   = Option(None, "--db", help="Ścieżka do bazy SQLite (np. data/tasks.db)"),
 ) -> None:
-    """Bootstrap zależności na starcie procesu CLI."""
     global service
-    service = build_service(file)
-
-
+    service = build_service(file=file, db=db)
 
 def short_id(task_id: TaskId | str, n: int = 8) -> str:
     """Zwraca skróconą wersję UUID do wyświetlenia (np. pierwsze 8 znaków)."""
@@ -93,6 +90,7 @@ def render_list(items: list[Task], total: int, page: int, page_size: int) -> Non
 
     table = Table(show_lines=True, header_style="bold")
     table.add_column("ID", no_wrap=True, style="cyan")
+    table.add_column("ID_Short", no_wrap=True, style="cyan")
     table.add_column("Title")
     table.add_column("Created At", no_wrap=True, style="dim")
     table.add_column("Status", no_wrap=True)
@@ -100,6 +98,7 @@ def render_list(items: list[Task], total: int, page: int, page_size: int) -> Non
     for t in items:
         created = t.created_at.strftime("%Y-%m-%d %H:%M")
         table.add_row(
+            t.task_id,
             short_id(t.task_id),
             t.title,
             created,

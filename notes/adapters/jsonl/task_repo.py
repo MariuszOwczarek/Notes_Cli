@@ -4,9 +4,9 @@ from notes.domain.errors import TaskAlreadyExistsError, TaskNotFoundError, TaskV
 from pathlib import Path
 from typing import Iterable
 from dataclasses import asdict
-import os, json
 from notes.domain.enums import TaskStatus
 from datetime import datetime, timezone
+import os, json
 
 ALLOWED = {"Open", "In Progress", "Closed"}
 
