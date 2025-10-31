@@ -92,6 +92,7 @@ def render_list(items: list[Task], total: int, page: int, page_size: int) -> Non
     table.add_column("ID", no_wrap=True, style="cyan")
     table.add_column("ID_Short", no_wrap=True, style="cyan")
     table.add_column("Title")
+    table.add_column("Description")
     table.add_column("Created At", no_wrap=True, style="dim")
     table.add_column("Status", no_wrap=True)
 
@@ -101,6 +102,7 @@ def render_list(items: list[Task], total: int, page: int, page_size: int) -> Non
             t.task_id,
             short_id(t.task_id),
             t.title,
+            t.description,
             created,
             color_status(t.status),
         )
